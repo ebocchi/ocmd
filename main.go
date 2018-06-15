@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+        "crypto/tls"
 	"time"
 
 	"github.com/cernbox/gohub/goconfig"
@@ -22,6 +23,8 @@ import (
 )
 
 func main() {
+
+        http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 
 	gc := goconfig.New()
 	gc.SetConfigName("ocmd")
