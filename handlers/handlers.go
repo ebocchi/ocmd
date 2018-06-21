@@ -32,21 +32,53 @@ func SSOAuthCheck(logger *zap.Logger, h http.Handler) http.Handler {
 	})
 }
 
+func IPtoHostnameResolver(logger *zap.Logger, clientIP string, addrType string) []string {
+        domains, err := net.LookupAddr(clientIP)
+	if err != nil {
+        	logger.Warn("unable to get domain name", zap.String("from", addrType), zap.String("ip", clientIP), zap.Error(err))
+		return nil
+	}
+	logger.Debug("ip resolution", zap.String("from", addrType), zap.String("ip", clientIP), zap.String("domains:", fmt.Sprintf("%+v", domains)))
+	return domains
+}
+
 func TrustedDomainCheck(logger *zap.Logger, providerAuthorizer api.ProviderAuthorizer, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		remoteAddress := r.RemoteAddr // ip:port
-		clientIP := strings.Split(remoteAddress, ":")[0]
-		domains, err := net.LookupAddr(clientIP)
-		if err != nil {
-			logger.Error("error getting domain for IP", zap.Error(err))
-			w.WriteHeader(http.StatusForbidden)
-			ae := api.NewAPIError(api.APIErrorUntrustedService)
-			w.Write(ae.JSON())
-			return
+		remoteAddressLookupSuccess := false
+		var domains []string
+		var clientIP string
+
+		// Get the hostname from IP layer address (will not work if behing nginx)
+		remoteAddress := r.RemoteAddr	// ip:port
+		clientIP = strings.Split(remoteAddress, ":")[0]
+		domains = IPtoHostnameResolver(logger, clientIP, "RemoteAddr")
+		if domains != nil {
+			remoteAddressLookupSuccess = true
+		} else {
+			// Get the hostname from HTTP header "X-Forwarded-For"
+			clientIP = r.Header.Get("X-Forwarded-For")
+			domains = IPtoHostnameResolver(logger, clientIP, "X-Forwarded-For")
+			if domains != nil {
+				remoteAddressLookupSuccess = true
+			} else {
+				// Get the hostname from HTTP header "X-Real-IP"
+				clientIP = r.Header.Get("X-Real-IP")
+	                        domains = IPtoHostnameResolver(logger, clientIP, "X-Real-IP")
+				if domains != nil {
+                                	remoteAddressLookupSuccess = true
+		                        }
+			}
 		}
-		logger.Debug("ip resolution", zap.String("ip", clientIP), zap.String("remote-address", remoteAddress), zap.String("domains", fmt.Sprintf("%+v", domains)))
+
+		if !remoteAddressLookupSuccess {
+                        logger.Error("did not manage to get domain name for client IP")
+                        w.WriteHeader(http.StatusForbidden)
+                        ae := api.NewAPIError(api.APIErrorUntrustedService)
+                        w.Write(ae.JSON())
+                        return
+		}
 
 		allowedDomain := ""
 		for _, domain := range domains {
@@ -65,7 +97,7 @@ func TrustedDomainCheck(logger *zap.Logger, providerAuthorizer api.ProviderAutho
 			return
 		}
 
-		logger.Debug("provider is allowd to access the API", zap.String("remote-address", remoteAddress), zap.String("domain", allowedDomain))
+		logger.Debug("provider is allowed to access the API", zap.String("remote-address", remoteAddress), zap.String("domain", allowedDomain))
 		mux.Vars(r)["domain"] = allowedDomain
 		h.ServeHTTP(w, r)
 	})
